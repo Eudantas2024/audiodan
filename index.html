@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Piper TTS — pt_BR-edresson-low (MP3 offline)</title>
+<style>
+  :root{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  body{margin:0;padding:24px;background:#a53294;color:#e7ecff}
+  .card{max-width:880px;margin:0 auto;background:#121936;border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  h1{margin:0 0 12px}
+  label{display:block;margin:12px 0 6px;opacity:.9}
+  textarea{width:100%;min-height:140px;border-radius:12px;border:1px solid #2a335c;background:#0f1630;color:#fff;padding:12px;font-size:16px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  select,input[type="range"]{width:100%;border-radius:10px;border:1px solid #2a335c;background:#0f1630;color:#fff;padding:10px;font-size:15px}
+  .btns{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}
+  button{border:0;border-radius:12px;padding:12px 16px;font-weight:600;cursor:pointer;background:#4f6bff;color:#fff}
+  button.secondary{background:#28315a}
+  .note{opacity:.8;font-size:13px;margin-top:10px}
+  .log{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:#0f1630;border:1px solid #2a335c;border-radius:12px;padding:10px;white-space:pre-wrap;max-height:260px;overflow:auto;margin-top:12px}
+  audio{width:100%;margin-top:12px}
+</style>
+
+<div class="card">
+  <h1>Piper TTS — pt_BR-edresson-low (MP3 offline)</h1>
+
+  <label for="text">Texto</label>
+  <textarea id="text">Olá! Este áudio foi gerado 100% no navegador usando Piper TTS e convertido para MP3 no próprio aparelho.</textarea>
+
+  <div class="grid">
+    <div>
+      <label for="rate">Velocidade (0.5–2.0): <span id="rateVal">1.0</span></label>
+      <input id="rate" type="range" min="0.5" max="2" step="0.05" value="1">
+    </div>
+    <div>
+      <label for="volume">Volume (0–1): <span id="volVal">1.0</span></label>
+      <input id="volume" type="range" min="0" max="1" step="0.05" value="1">
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <label for="format">Formato do download</label>
+      <select id="format">
+        <option value="mp3" selected>MP3 (compacto)</option>
+        <option value="wav">WAV (sem perda, maior)</option>
+      </select>
+    </div>
+    <div class="note" style="align-self:end">
+      1ª vez: use <b>Pré-carregar modelo</b>. Depois clique em <b>Reproduzir</b>.
+    </div>
+  </div>
+
+  <div class="btns">
+    <button id="btnPreload" class="secondary">⬇️ Pré-carregar modelo</button>
+    <button id="btnSpeak">▶️ Reproduzir</button>
+    <button id="btnStop" class="secondary">⏹️ Parar</button>
+    <button id="btnDownload" class="secondary">⬇️ Baixar</button>
+    <button id="btnClear" class="secondary">🧹 Limpar modelos</button>
+    <button id="btnDiag" class="secondary">🧪 Diagnóstico</button>
+  </div>
+
+  <audio id="player" controls></audio>
+  <div id="log" class="log"></div>
+
+  <div class="note">
+    Se mudar a pasta dos modelos, ajuste <code>CUSTOM_MODEL_BASE</code>.
+  </div>
+</div>
+
+<!-- (A) Import Map: força o ONNX Runtime "sem SIMD/threads" -->
+<script type="importmap">
+{
+  "imports": {
+    "@onnxruntime/web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort-wasm.jsep.mjs"
+  }
+}
+</script>
+
+<!-- (B) Pré-carrega ORT global e desliga SIMD/threads (freio extra) -->
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+<script>
+  if (window.ort && ort.env && ort.env.wasm) {
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.simd = false;
+    ort.env.wasm.proxy = false;
+    self.globalThis = self.globalThis || window;
+    globalThis.ort = ort;
+  }
+</script>
+
+<!-- (C) LameJS para MP3 -->
+<script src="https://cdn.jsdelivr.net/gh/zhuker/lamejs@master/lame.all.js"></script>
+
+<!-- (D) App principal -->
+<script type="module">
+  const CUSTOM_MODEL_BASE = 'https://eudantas2024.github.io/audiotext/models/pt_BR/';
+  const VOICE_ID = 'pt_BR-edresson-low';
+
+  const logEl = document.getElementById('log');
+  const player = document.getElementById('player');
+  const rateInp = document.getElementById('rate');
+  const volInp = document.getElementById('volume');
+  const rateVal = document.getElementById('rateVal');
+  const volVal = document.getElementById('volVal');
+  const textArea = document.getElementById('text');
+  const formatSel = document.getElementById('format');
+
+  const log = (m)=>{ logEl.textContent += m + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+  const ok  = (m)=> log('✅ ' + m);
+  const err = (m)=> log('❌ ' + m);
+
+  rateInp.addEventListener('input', ()=> rateVal.textContent = rateInp.value);
+  volInp.addEventListener('input', ()=> volVal.textContent = volInp.value);
+
+  // ---------- carregador resiliente da lib Piper ----------
+  async function tryImport(url, label){
+    try {
+      const m = await import(url);
+      ok('Import OK: ' + label);
+      return m;
+    } catch (e){
+      err('Falhou import: ' + label + ' → ' + (e?.message || e));
+      return null;
+    }
+  }
+
+  // URLs de fallback (ordem importa)
+  const CANDIDATES = [
+    ['esm.sh (fixado 0.7.2 + bundle)', 'https://esm.sh/@mintplex-labs/piper-tts-web@0.7.2?bundle'],
+    ['esm.sh (latest + bundle)', 'https://esm.sh/@mintplex-labs/piper-tts-web@latest?bundle'],
+    ['JSPM (ga.jspm.io)', 'https://ga.jspm.io/npm:@mintplex-labs/piper-tts-web@0.7.2/dist/index.js'],
+    ['jsDelivr (module)', 'https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@0.7.2/dist/index.min.js'],
+    ['unpkg (module)', 'https://unpkg.com/@mintplex-labs/piper-tts-web@0.7.2/dist/index.min.js'],
+    // por último: caminho local (caso você hospede a lib no próprio repo)
+    ['LOCAL (vendor no repositório)', './piper-index.min.js']
+  ];
+
+  let tts;
+  for (const [label, url] of CANDIDATES){
+    tts = await tryImport(url, label);
+    if (tts) { break; }
+  }
+  if (!tts) {
+    err('Nenhuma CDN/rota da biblioteca Piper carregou. Use o plano B (vendor local).');
+  }
+
+  const api = (tts && (tts.default || tts)) || {};
+  const fn = (name)=> api[name] || (api.core && api.core[name]);
+  const download = fn('download');
+  const predict  = fn('predict');
+  const voices   = fn('voices');
+  const stored   = fn('stored');
+  const flush    = fn('flush');
+  const configure= fn('configure');
+
+  if (!download || !predict) {
+    err('A biblioteca Piper não carregou corretamente. Veja o plano B abaixo do código.');
+  }
+
+  if (configure && CUSTOM_MODEL_BASE) {
+    try {
+      configure({ modelBaseUrl: CUSTOM_MODEL_BASE });
+      ok('Base de modelos configurada: ' + CUSTOM_MODEL_BASE);
+    } catch(e){ err('Falha ao configurar base: ' + e.message); }
+  } else if (CUSTOM_MODEL_BASE) {
+    log('ℹ️ Se a versão da lib não expor configure(), garanta que os arquivos estão nesse caminho.');
+  }
+
+  async function ensureDownloaded(){
+    if (!download) { err('download() indisponível.'); return; }
+    log(`Checando modelo "${VOICE_ID}"...`);
+    try {
+      const keep = (await stored?.()) || [];
+      if (keep.includes(VOICE_ID)) { ok('Modelo já existe localmente.'); return; }
+    } catch(_) {}
+    log('Baixando modelo (1ª vez pode demorar)…');
+    try {
+      await download(VOICE_ID, (p)=>{
+        if (!p || !p.total) return;
+        const pct = Math.round((p.loaded*100)/p.total);
+        log(`→ ${p.url || 'arquivo'}: ${pct}%`);
+      });
+      ok('Modelo salvo offline.');
+    } catch(e) {
+      err('Erro ao baixar modelo. Verifique CUSTOM_MODEL_BASE e os .onnx/.json. ' + e.message);
+    }
+  }
+
+  let lastWavBlob = null;
+
+  async function synthesize(){
+    if (!predict) { err('predict() indisponível.'); return; }
+    const text = textArea.value.trim();
+    if (!text) { log('Digite um texto.'); return; }
+    await ensureDownloaded();
+    log('Sintetizando (Piper)…');
+    try {
+      const wavBlob = await predict({
+        text,
+        voiceId: VOICE_ID,
+        rate: parseFloat(rateInp.value),
+        volume: parseFloat(volInp.value)
+      }, (p)=>{ if (p && p.progress) log(`Progresso: ${Math.round(p.progress*100)}%`); });
+      lastWavBlob = wavBlob;
+      player.src = URL.createObjectURL(wavBlob);
+      player.play().catch(()=>{ /* gesto do usuário pode ser exigido */ });
+      ok('Áudio pronto.');
+    } catch(e) {
+      err('Erro na síntese: ' + e.message);
+    }
+  }
+
+  function parseWavToPCM16(wavBuffer){
+    const dv = new DataView(wavBuffer);
+    if (dv.getUint32(0, false) !== 0x52494646) throw new Error('Não é RIFF WAV');
+    const channels = dv.getUint16(22, true);
+    const sampleRate = dv.getUint32(24, true);
+    const bitsPerSample = dv.getUint16(34, true);
+    let pos = 12;
+    while (pos < dv.byteLength){
+      const id = dv.getUint32(pos, false);
+      const size = dv.getUint32(pos+4, true);
+      if (id === 0x64617461) { // 'data'
+        const pcm = new Int16Array(wavBuffer, pos+8, size/2);
+        return { pcm, sampleRate, channels, bitsPerSample };
+      }
+      pos += 8 + size;
+    }
+    throw new Error("Chunk 'data' não encontrado no WAV.");
+  }
+
+  function encodeMp3FromPCM({ pcm, sampleRate, channels }){
+    let mono = pcm;
+    if (channels === 2){
+      const m = new Int16Array(pcm.length/2);
+      for (let i=0, j=0; i<pcm.length; i+=2, j++) m[j] = (pcm[i]+pcm[i+1])>>1;
+      mono = m;
+    }
+    const kbps = 128;
+    const enc = new lamejs.Mp3Encoder(1, sampleRate, kbps);
+    const frame = 1152;
+    const out = [];
+    for (let i=0;i<mono.length;i+=frame){
+      const chunk = mono.subarray(i, i+frame);
+      const buf = enc.encodeBuffer(chunk);
+      if (buf.length) out.push(new Int8Array(buf));
+    }
+    const end = enc.flush(); if (end.length) out.push(new Int8Array(end));
+    let total=0; out.forEach(b=> total+=b.length);
+    const u8 = new Uint8Array(total);
+    let off=0; out.forEach(b=>{ u8.set(b, off); off+=b.length; });
+    return new Blob([u8], { type:'audio/mpeg' });
+  }
+
+  function downloadBlob(blob, filename){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    URL.revokeObjectURL(url); a.remove();
+  }
+
+  document.getElementById('btnPreload').addEventListener('click', ensureDownloaded);
+  document.getElementById('btnSpeak').addEventListener('click', synthesize);
+  document.getElementById('btnStop').addEventListener('click', ()=>{ try{ player.pause(); player.currentTime=0; }catch(_){} });
+  document.getElementById('btnClear').addEventListener('click', async ()=>{
+    try { await flush?.(); ok('Modelos removidos do armazenamento local.'); } catch(e){ err('Falha ao limpar: '+e.message); }
+  });
+
+  document.getElementById('btnDownload').addEventListener('click', async ()=>{
+    if (!lastWavBlob){ log('Gere um áudio primeiro.'); return; }
+    const fmt = formatSel.value;
+    if (fmt === 'wav'){ downloadBlob(lastWavBlob, 'piper.wav'); ok('WAV baixado.'); return; }
+    try {
+      log('Convertendo WAV → MP3…');
+      const ab = await lastWavBlob.arrayBuffer();
+      const { pcm, sampleRate, channels } = parseWavToPCM16(ab);
+      const mp3 = encodeMp3FromPCM({ pcm, sampleRate, channels });
+      downloadBlob(mp3, 'piper.mp3');
+      ok('MP3 baixado.');
+    } catch(e){ err('Falha na conversão para MP3: ' + e.message); }
+  });
+
+  document.getElementById('btnDiag').addEventListener('click', async ()=>{
+    log('=== Diagnóstico rápido ===');
+    try { ok('HTTPS: ' + (location.protocol === 'https:' ? 'sim' : 'não')); } catch(_){}
+    try { ok('WASM: ' + (typeof WebAssembly !== 'undefined')); } catch(_){}
+    try { ok('AudioContext: ' + (window.AudioContext ? 'sim' : 'não')); } catch(_){}
+    try {
+      const r = await fetch(CUSTOM_MODEL_BASE + 'pt_BR-edresson-low.onnx', { method:'HEAD', cache:'no-store' });
+      log('HEAD .onnx: ' + r.status + ' ' + r.statusText);
+    } catch(e){ err('Falha HEAD .onnx: ' + e.message); }
+    try {
+      const r = await fetch(CUSTOM_MODEL_BASE + 'pt_BR-edresson-low.onnx.json', { method:'HEAD', cache:'no-store' });
+      log('HEAD .json: ' + r.status + ' ' + r.statusText);
+    } catch(e){ err('Falha HEAD .json: ' + e.message); }
+  });
+
+  try {
+    const v = await voices?.();
+    if (v?.length) log('Vozes disponíveis na lib: ' + v.slice(0,8).map(x=> (x.name||x.id||x)).join(', ') + (v.length>8?'…':''));
+  } catch(_){}
+</script>
+</html>
