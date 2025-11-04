@@ -5,7 +5,7 @@
 <title>Piper TTS — pt_BR-edresson-low (MP3 offline)</title>
 <style>
   :root{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-  body{margin:0;padding:24px;background:#66a532;color:#e7ecff}
+  body{margin:0;padding:24px;background:#a53294;color:#e7ecff}
   .card{max-width:880px;margin:0 auto;background:#121936;border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
   h1{margin:0 0 12px}
   label{display:block;margin:12px 0 6px;opacity:.9}
@@ -67,16 +67,20 @@
   </div>
 </div>
 
-<!-- Import Map: força ONNX Runtime “sem SIMD/threads” -->
+<!-- Import Map: cobre 'onnxruntime-web' e '@onnxruntime/web' + subcaminhos -->
 <script type="importmap">
 {
   "imports": {
-    "@onnxruntime/web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort-wasm.jsep.mjs"
+    "onnxruntime-web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort-wasm.jsep.mjs",
+    "@onnxruntime/web": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort-wasm.jsep.mjs",
+    "onnxruntime-web/wasm": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort-wasm.jsep.mjs",
+    "onnxruntime-web/webgpu": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort-wasm.jsep.mjs",
+    "onnxruntime-web/webnn": "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort-wasm.jsep.mjs"
   }
 }
 </script>
 
-<!-- Pré-carrega ORT global e desliga SIMD/threads (freio extra) -->
+<!-- Freio extra: ORT global sem SIMD/threads -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
 <script>
   if (window.ort && ort.env && ort.env.wasm) {
@@ -110,19 +114,15 @@
   rateInp.addEventListener('input', ()=> rateVal.textContent = rateInp.value);
   volInp.addEventListener('input', ()=> volVal.textContent = volInp.value);
 
-  // ===== Import resiliente da lib Piper (use 1.0.4) =====
+  // Import da lib Piper 1.0.4 (com fallbacks)
   async function tryImport(url, label){
     try { const m = await import(url); ok('Import OK: ' + label); return m; }
     catch(e){ err('Falhou import: ' + label + ' → ' + (e?.message||e)); return null; }
   }
   const CANDIDATES = [
-    // jsDelivr tem a 1.0.4 publicada
     ['jsDelivr (esm)', 'https://cdn.jsdelivr.net/npm/@mintplex-labs/piper-tts-web@1.0.4/dist/piper-tts-web.js'],
-    // esm.sh como backup
     ['esm.sh (bundle)', 'https://esm.sh/@mintplex-labs/piper-tts-web@1.0.4?bundle'],
-    // unpkg como outro backup
     ['unpkg (esm)', 'https://unpkg.com/@mintplex-labs/piper-tts-web@1.0.4/dist/piper-tts-web.js'],
-    // rota local opcional (se você subir o arquivo no repo)
     ['LOCAL (vendor)', './piper-index.min.js']
   ];
   let tts;
@@ -171,8 +171,8 @@
   let lastWavBlob = null;
 
   async function synthesize(){
-    if (!predict) { err('predict() indisponível.'); return; }
     const text = textArea.value.trim();
+    if (!predict) { err('predict() indisponível.'); return; }
     if (!text) { log('Digite um texto.'); return; }
     await ensureDownloaded();
     log('Sintetizando (Piper)…');
